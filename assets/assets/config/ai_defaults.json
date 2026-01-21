@@ -1,1 +1,27 @@
-defaults
+{
+    "aiName": "Monster",
+    "phasesLoaded": 21,
+    "defaultLanguage": "en",
+    "allowMultiLanguage": true,
+    "languagesAvailable": ["en", "sw", "fr"],
+    "ttsEngine": "native",
+    "externalTtsSupport": true,
+    "defaultVolume": 0.8,
+    "defaultSpeed": 1.0,
+    "enableNotes": true,
+    "enableQuestions": true,
+    "maxSilentQuestions": 10,
+    "autoSaveNotes": true,
+    "highlightMode": "fontColor",
+    "groupStudyAI": true,
+    "onlineMeetings": {
+        "fullscreenPresenter": true,
+        "videoParticipantsDisplay": true
+    },
+    "quiz": {
+        "lqaEnabled": true,
+        "saqEnabled": true
+    },
+    "researchAutomation": true,
+    "autoSyllabusExpand": true
+}
