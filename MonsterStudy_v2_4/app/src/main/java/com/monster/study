@@ -1,1 +1,2127 @@
-source code
+package com.monster.revision.core
+
+/* ================================
+   PHASE 1 — CORE MEETING ENGINE
+   Authoritative, UI-agnostic
+   ================================ */
+
+/* ---------- ROLES & MODES ---------- */
+
+enum class MeetingRole {
+    HOST,
+    PARTICIPANT,
+    MONSTER_AI
+}
+
+enum class FocusOwnerType {
+    USER,
+    MONSTER
+}
+
+/* ---------- PARTICIPANT MODEL ---------- */
+
+data class Participant(
+    val id: String,
+    val displayName: String,
+    val role: MeetingRole,
+    var videoEnabled: Boolean = false,
+    var audioEnabled: Boolean = false,
+    var handRaised: Boolean = false,
+    var isConnected: Boolean = true
+)
+
+/* ---------- MEETING STATE (SSOT) ---------- */
+
+data class MeetingState(
+    val meetingId: String,
+    val participants: MutableMap<String, Participant> = mutableMapOf(),
+
+    var focusMode: Boolean = false,
+    var focusOwnerId: String? = null,
+    var focusOwnerType: FocusOwnerType? = null,
+
+    var examMode: Boolean = false,
+    var discussionLocked: Boolean = false
+)
+
+/* ---------- PERMISSION POLICY ---------- */
+
+object PermissionPolicy {
+
+    fun canForceGlobalFocus(role: MeetingRole): Boolean {
+        return role == MeetingRole.HOST || role == MeetingRole.MONSTER_AI
+    }
+
+    fun canRaiseHand(examMode: Boolean): Boolean {
+        return !examMode
+    }
+
+    fun canSpeak(state: MeetingState, userId: String): Boolean {
+        if (state.examMode) return false
+        if (!state.focusMode) return true
+        return state.focusOwnerId == userId
+    }
+}
+
+/* ---------- FOCUS CONTROLLER ---------- */
+
+class FocusController(private val state: MeetingState) {
+
+    fun enableFocus(ownerId: String, ownerType: FocusOwnerType) {
+        state.focusMode = true
+        state.focusOwnerId = ownerId
+        state.focusOwnerType = ownerType
+
+        state.participants.values.forEach {
+            if (it.id != ownerId) {
+                it.videoEnabled = false
+                it.audioEnabled = false
+            }
+        }
+    }
+
+    fun disableFocus() {
+        state.focusMode = false
+        state.focusOwnerId = null
+        state.focusOwnerType = null
+
+        state.participants.values.forEach {
+            it.videoEnabled = true
+            it.audioEnabled = true
+        }
+    }
+
+    fun onOwnerDisconnected(ownerId: String) {
+        if (state.focusOwnerId == ownerId) {
+            disableFocus()
+        }
+    }
+}
+
+/* ---------- HAND RAISE ENGINE ---------- */
+
+class HandRaiseController(private val state: MeetingState) {
+
+    fun raiseHand(userId: String) {
+        if (PermissionPolicy.canRaiseHand(state.examMode)) {
+            state.participants[userId]?.handRaised = true
+        }
+    }
+
+    fun lowerHand(userId: String) {
+        state.participants[userId]?.handRaised = false
+    }
+
+    fun getQueue(): List<Participant> {
+        return state.participants.values
+            .filter { it.handRaised }
+            .sortedBy { it.displayName }
+    }
+}
+
+/* ---------- TEXT QUESTION QUEUE ---------- */
+
+data class SilentQuestion(
+    val senderId: String,
+    val content: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+class SilentQuestionQueue {
+
+    private val questions = mutableListOf<SilentQuestion>()
+
+    fun submit(question: SilentQuestion) {
+        questions.add(question)
+    }
+
+    fun drain(): List<SilentQuestion> {
+        val copy = questions.toList()
+        questions.clear()
+        return copy
+    }
+}
+
+/* ---------- EXAM MODE CONTROLLER ---------- */
+
+class ExamModeController(private val state: MeetingState) {
+
+    fun enable() {
+        state.examMode = true
+        state.discussionLocked = true
+
+        state.participants.values.forEach {
+            it.audioEnabled = false
+            it.videoEnabled = false
+            it.handRaised = false
+        }
+    }
+
+    fun disable() {
+        state.examMode = false
+        state.discussionLocked = false
+    }
+}
+
+/* ---------- MONSTER AI CORE ---------- */
+
+class MonsterAIEngine(
+    private val state: MeetingState,
+    private val focusController: FocusController
+) {
+
+    private val monsterId = "MONSTER_AI"
+
+    fun joinSession() {
+        state.participants[monsterId] = Participant(
+            id = monsterId,
+            displayName = "Monster",
+            role = MeetingRole.MONSTER_AI,
+            videoEnabled = true,
+            audioEnabled = true
+        )
+    }
+
+    fun startTutoring() {
+        focusController.enableFocus(
+            ownerId = monsterId,
+            ownerType = FocusOwnerType.MONSTER
+        )
+    }
+
+    fun pauseTutoring() {
+        focusController.disableFocus()
+    }
+
+    fun answerSilently(question: SilentQuestion): String {
+        return "Monster AI Response to: ${question.content}"
+    }
+}
+
+/* ---------- MEETING ENGINE ---------- */
+
+class MeetingEngine(meetingId: String) {
+
+    val state = MeetingState(meetingId)
+    private val focusController = FocusController(state)
+    private val handRaiseController = HandRaiseController(state)
+    private val examController = ExamModeController(state)
+    private val questionQueue = SilentQuestionQueue()
+    private val monsterAI = MonsterAIEngine(state, focusController)
+
+    fun addParticipant(participant: Participant) {
+        state.participants[participant.id] = participant
+    }
+
+    fun removeParticipant(userId: String) {
+        state.participants.remove(userId)
+        focusController.onOwnerDisconnected(userId)
+    }
+
+    fun raiseHand(userId: String) = handRaiseController.raiseHand(userId)
+    fun lowerHand(userId: String) = handRaiseController.lowerHand(userId)
+
+    fun submitSilentQuestion(userId: String, text: String) {
+        questionQueue.submit(SilentQuestion(userId, text))
+    }
+
+    fun enableExamMode() = examController.enable()
+    fun disableExamMode() = examController.disable()
+
+    fun startMonsterTutoring() {
+        monsterAI.joinSession()
+        monsterAI.startTutoring()
+    }
+}package com.monster.revision.core
+
+import kotlin.math.min
+
+/* ================================
+   PHASE 2 — VIDEO GRID & ACTIVE SPEAKER
+   Extends Phase 1
+   ================================ */
+
+/* ---------- VIDEO STREAM MODEL ---------- */
+
+data class VideoStream(
+    val participantId: String,
+    var isActive: Boolean = false,  // speaking
+    var isVisible: Boolean = true,
+    var quality: VideoQuality = VideoQuality.HIGH
+)
+
+enum class VideoQuality { LOW, MEDIUM, HIGH }
+
+/* ---------- GRID LAYOUT ENGINE ---------- */
+
+class VideoGridEngine(
+    private val state: MeetingState,
+    private val maxVisible: Int = 6
+) {
+    val streams = mutableMapOf<String, VideoStream>()
+
+    fun registerParticipant(userId: String) {
+        streams[userId] = VideoStream(participantId = userId)
+    }
+
+    fun unregisterParticipant(userId: String) {
+        streams.remove(userId)
+    }
+
+    fun updateActiveSpeaker(userId: String) {
+        streams.values.forEach { it.isActive = it.participantId == userId }
+    }
+
+    fun applyFocusMode() {
+        if (!state.focusMode) return
+        streams.values.forEach {
+            it.isVisible = it.participantId == state.focusOwnerId
+        }
+    }
+
+    fun applyBandwidthMode(lowBandwidth: Boolean) {
+        val quality = if (lowBandwidth) VideoQuality.LOW else VideoQuality.HIGH
+        streams.values.forEach { it.quality = quality }
+    }
+
+    fun getVisibleStreams(): List<VideoStream> {
+        val visibleStreams = streams.values.filter { it.isVisible }
+        return visibleStreams.take(min(visibleStreams.size, maxVisible))
+    }
+}
+
+/* ---------- FULLSCREEN HANDLER ---------- */
+
+class FullscreenController(
+    private val state: MeetingState,
+    private val grid: VideoGridEngine
+) {
+
+    fun triggerFullscreen(userId: String) {
+        val participant = state.participants[userId] ?: return
+        if (PermissionPolicy.canForceGlobalFocus(participant.role)) {
+            state.focusMode = true
+            state.focusOwnerId = userId
+            state.focusOwnerType = if (participant.role == MeetingRole.MONSTER_AI) FocusOwnerType.MONSTER else FocusOwnerType.USER
+            grid.applyFocusMode()
+        }
+    }
+
+    fun exitFullscreen() {
+        state.focusMode = false
+        state.focusOwnerId = null
+        state.focusOwnerType = null
+        grid.streams.values.forEach { it.isVisible = true }
+    }
+
+    fun autoFullscreenForLeader() {
+        // Auto fullscreen if only one video active
+        val activeStreams = grid.getVisibleStreams().filter { it.isActive }
+        if (activeStreams.size == 1) {
+            triggerFullscreen(activeStreams.first().participantId)
+        } else if (state.focusMode) {
+            exitFullscreen()
+        }
+    }
+}
+
+/* ---------- ACTIVE SPEAKER DETECTOR ---------- */
+
+class ActiveSpeakerDetector(
+    private val state: MeetingState,
+    private val grid: VideoGridEngine
+) {
+
+    fun detectSpeaking(participantId: String) {
+        grid.updateActiveSpeaker(participantId)
+        if (!state.examMode) {
+            // auto fullscreen if leader/speaker
+            FullscreenController(state, grid).autoFullscreenForLeader()
+        }
+    }
+}
+
+/* ---------- USAGE EXAMPLE (IN ENGINE) ---------- */
+
+class MeetingEngineV2(meetingId: String) {
+
+    val state = MeetingState(meetingId)
+    val grid = VideoGridEngine(state)
+    val focusController = FocusController(state)
+    val fullscreenController = FullscreenController(state, grid)
+    val activeSpeakerDetector = ActiveSpeakerDetector(state, grid)
+    val handRaiseController = HandRaiseController(state)
+    val examController = ExamModeController(state)
+    val questionQueue = SilentQuestionQueue()
+    val monsterAI = MonsterAIEngine(state, focusController)
+
+    fun addParticipant(participant: Participant) {
+        state.participants[participant.id] = participant
+        grid.registerParticipant(participant.id)
+    }
+
+    fun removeParticipant(userId: String) {
+        state.participants.remove(userId)
+        grid.unregisterParticipant(userId)
+        focusController.onOwnerDisconnected(userId)
+    }
+
+    fun participantSpoke(userId: String) {
+        activeSpeakerDetector.detectSpeaking(userId)
+    }
+
+    fun enableLowBandwidthMode() {
+        grid.applyBandwidthMode(true)
+    }
+
+    fun disableLowBandwidthMode() {
+        grid.applyBandwidthMode(false)
+    }
+
+    fun startMonsterTutoring() {
+        monsterAI.joinSession()
+        monsterAI.startTutoring()
+        grid.registerParticipant("MONSTER")
+    }
+
+    fun fullscreenParticipant(userId: String) {
+        fullscreenController.triggerFullscreen(userId)
+    }
+
+    fun exitFullscreen() {
+        fullscreenController.exitFullscreen()
+    }
+
+    fun raiseHand(userId: String) = handRaiseController.raiseHand(userId)
+    fun lowerHand(userId: String) = handRaiseController.lowerHand(userId)
+
+    fun submitSilentQuestion(userId: String, text: String) {
+        questionQueue.submit(SilentQuestion(userId, text))
+    }
+
+    fun enableExamMode() = examController.enable()
+    fun disableExamMode() = examController.disable()
+}
+
+package com.monster.revision.core
+
+import kotlin.random.Random
+
+/* ================================
+   PHASE 3 — HAND RAISE & SILENT QUESTIONS
+   Integrates Phase 1 & 2
+   ================================ */
+
+/* ---------- SILENT QUESTION MODEL ---------- */
+
+data class SilentQuestion(
+    val senderId: String,
+    val content: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+/* ---------- HAND RAISE QUEUE ---------- */
+
+class HandRaiseQueue(private val state: MeetingState) {
+
+    private val queue = mutableListOf<String>()
+
+    fun raiseHand(userId: String) {
+        val participant = state.participants[userId] ?: return
+        if (PermissionPolicy.canRaiseHand(state.examMode) && !queue.contains(userId)) {
+            participant.handRaised = true
+            queue.add(userId)
+        }
+    }
+
+    fun lowerHand(userId: String) {
+        val participant = state.participants[userId] ?: return
+        participant.handRaised = false
+        queue.remove(userId)
+    }
+
+    fun nextInQueue(): Participant? {
+        while (queue.isNotEmpty()) {
+            val userId = queue.removeAt(0)
+            val participant = state.participants[userId]
+            if (participant != null && participant.isConnected) {
+                participant.handRaised = false
+                return participant
+            }
+        }
+        return null
+    }
+
+    fun peekQueue(): List<Participant> {
+        return queue.mapNotNull { state.participants[it] }
+    }
+}
+
+/* ---------- SILENT QUESTION QUEUE ---------- */
+
+class SilentQuestionQueue {
+
+    private val questions = mutableListOf<SilentQuestion>()
+
+    fun submit(question: SilentQuestion) {
+        questions.add(question)
+    }
+
+    fun drain(): List<SilentQuestion> {
+        val copy = questions.toList()
+        questions.clear()
+        return copy
+    }
+
+    fun nextQuestion(): SilentQuestion? {
+        if (questions.isEmpty()) return null
+        return questions.removeAt(0)
+    }
+}
+
+/* ---------- MONSTER AI INTERACTION ---------- */
+
+class MonsterTutorEngine(
+    private val state: MeetingState,
+    private val focusController: FocusController
+) {
+
+    private val silentQueue = SilentQuestionQueue()
+    private val handQueue = HandRaiseQueue(state)
+
+    fun joinSession() {
+        val monsterId = "MONSTER_AI"
+        state.participants[monsterId] = Participant(
+            id = monsterId,
+            displayName = "Monster",
+            role = MeetingRole.MONSTER_AI,
+            videoEnabled = true,
+            audioEnabled = true
+        )
+    }
+
+    fun startTutoring() {
+        focusController.enableFocus("MONSTER_AI", FocusOwnerType.MONSTER)
+    }
+
+    fun pauseTutoring() {
+        focusController.disableFocus()
+    }
+
+    fun handleHandRaise(userId: String) {
+        handQueue.raiseHand(userId)
+    }
+
+    fun lowerHand(userId: String) {
+        handQueue.lowerHand(userId)
+    }
+
+    fun nextRaisedParticipant(): Participant? {
+        return handQueue.nextInQueue()
+    }
+
+    fun submitSilentQuestion(userId: String, text: String) {
+        silentQueue.submit(SilentQuestion(userId, text))
+    }
+
+    fun answerNextQuestion(): String? {
+        val question = silentQueue.nextQuestion() ?: return null
+        return generateAnswer(question)
+    }
+
+    private fun generateAnswer(question: SilentQuestion): String {
+        // simple static response logic, can be extended later
+        val responses = listOf(
+            "Good question, here’s a hint: ${question.content.take(20)}...",
+            "Let's analyze this together: ${question.content.take(25)}...",
+            "Consider revising the topic: ${question.content.take(30)}..."
+        )
+        return responses[Random.nextInt(responses.size)]
+    }
+
+    fun getHandQueue(): List<Participant> {
+        return handQueue.peekQueue()
+    }
+}
+
+/* ---------- INTEGRATED MEETING ENGINE PHASE 3 ---------- */
+
+class MeetingEngineV3(meetingId: String) {
+
+    val state = MeetingState(meetingId)
+    val focusController = FocusController(state)
+    val videoGrid = VideoGridEngine(state)
+    val fullscreenController = FullscreenController(state, videoGrid)
+    val activeSpeakerDetector = ActiveSpeakerDetector(state, videoGrid)
+    val examController = ExamModeController(state)
+    val monsterTutor = MonsterTutorEngine(state, focusController)
+
+    fun addParticipant(participant: Participant) {
+        state.participants[participant.id] = participant
+        videoGrid.registerParticipant(participant.id)
+    }
+
+    fun removeParticipant(userId: String) {
+        state.participants.remove(userId)
+        videoGrid.unregisterParticipant(userId)
+        focusController.onOwnerDisconnected(userId)
+    }
+
+    fun participantSpoke(userId: String) {
+        activeSpeakerDetector.detectSpeaking(userId)
+    }
+
+    fun enableLowBandwidth() = videoGrid.applyBandwidthMode(true)
+    fun disableLowBandwidth() = videoGrid.applyBandwidthMode(false)
+
+    fun startMonsterTutoring() = monsterTutor.startTutoring()
+    fun pauseMonsterTutoring() = monsterTutor.pauseTutoring()
+
+    fun raiseHand(userId: String) = monsterTutor.handleHandRaise(userId)
+    fun lowerHand(userId: String) = monsterTutor.lowerHand(userId)
+    fun nextHandParticipant() = monsterTutor.nextRaisedParticipant()
+
+    fun submitSilentQuestion(userId: String, text: String) = monsterTutor.submitSilentQuestion(userId, text)
+    fun answerNextQuestion() = monsterTutor.answerNextQuestion()
+
+    fun fullscreenParticipant(userId: String) = fullscreenController.triggerFullscreen(userId)
+    fun exitFullscreen() = fullscreenController.exitFullscreen()
+
+    fun enableExamMode() = examController.enable()
+    fun disableExamMode() = examController.disable()
+}package com.monster.revision.core
+
+import android.content.Context
+import android.speech.tts.TextToSpeech
+import java.util.*
+
+/* ================================
+   PHASE 4 — MULTILINGUAL TTS & DOCUMENT READING
+   ================================ */
+
+/* ---------- SUPPORTED LANGUAGES ---------- */
+
+enum class LanguageCode(val locale: Locale) {
+    EN_US(Locale("en", "US")),
+    EN_GB(Locale("en", "GB")),
+    FR_FR(Locale("fr", "FR")),
+    SW_KE(Locale("sw", "KE")),  // Kiswahili Kenya
+    ES_ES(Locale("es", "ES")),
+    DE_DE(Locale("de", "DE"))
+}
+
+/* ---------- OFFLINE TTS ENGINE ---------- */
+
+class OfflineTTS(context: Context) : TextToSpeech.OnInitListener {
+
+    private var tts: TextToSpeech = TextToSpeech(context, this)
+    private val languages = mutableListOf(Locale.US)
+    private var currentLangIndex = 0
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) tts.language = Locale.US
+    }
+
+    fun speak(text: String) {
+        tts.language = languages[currentLangIndex]
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+        currentLangIndex = (currentLangIndex + 1) % languages.size
+    }
+
+    fun downloadLanguage(langCode: LanguageCode) {
+        val locale = langCode.locale
+        val result = tts.setLanguage(locale)
+        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+            // This triggers system TTS data download
+        } else {
+            if (!languages.contains(locale)) languages.add(locale)
+        }
+    }
+
+    fun switchLanguage() {
+        currentLangIndex = (currentLangIndex + 1) % languages.size
+        tts.language = languages[currentLangIndex]
+    }
+}
+
+/* ---------- DOCUMENT READING ---------- */
+
+data class Document(val id: String, val title: String, val content: String)
+
+class DocumentLibrary {
+
+    private val documents = mutableMapOf<String, Document>()
+
+    fun addDocument(doc: Document) {
+        documents[doc.id] = doc
+    }
+
+    fun removeDocument(id: String) {
+        documents.remove(id)
+    }
+
+    fun getDocument(id: String): Document? = documents[id]
+
+    fun getAllDocuments(): List<Document> = documents.values.toList()
+}
+
+/* ---------- HIGHLIGHTING ---------- */
+
+enum class HighlightMode { SELECTION, WORD, LINE }
+
+data class Highlight(
+    val docId: String,
+    val startIndex: Int,
+    val endIndex: Int,
+    val colorHex: String = "#FFEB3B"
+)
+
+class Highlighter {
+
+    private val highlights = mutableListOf<Highlight>()
+
+    fun highlight(docId: String, start: Int, end: Int, colorHex: String = "#FFEB3B") {
+        highlights.add(Highlight(docId, start, end, colorHex))
+    }
+
+    fun getHighlights(docId: String): List<Highlight> {
+        return highlights.filter { it.docId == docId }
+    }
+
+    fun clearHighlights(docId: String) {
+        highlights.removeAll { it.docId == docId }
+    }
+}
+
+/* ---------- INTEGRATED REVISION ENGINE ---------- */
+
+class RevisionEngine(context: Context) {
+
+    private val ttsEngine = OfflineTTS(context)
+    private val library = DocumentLibrary()
+    private val highlighter = Highlighter()
+
+    fun addDocument(doc: Document) = library.addDocument(doc)
+    fun removeDocument(id: String) = library.removeDocument(id)
+    fun readDocument(id: String) {
+        val doc = library.getDocument(id) ?: return
+        ttsEngine.speak(doc.content)
+    }
+
+    fun highlightDocument(docId: String, start: Int, end: Int, colorHex: String = "#FFEB3B") {
+        highlighter.highlight(docId, start, end, colorHex)
+    }
+
+    fun switchLanguage() = ttsEngine.switchLanguage()
+    fun downloadLanguage(langCode: LanguageCode) = ttsEngine.downloadLanguage(langCode)
+
+    fun getHighlights(docId: String) = highlighter.getHighlights(docId)
+}
+package com.monster.revision.core
+
+/* ================================
+   PHASE 5 — OFFLINE QUIZZES & EXERCISES
+   ================================ */
+
+/* ---------- QUESTION MODELS ---------- */
+
+enum class QuestionType { MCQ, SAQ, LQA }
+
+data class Question(
+    val id: String,
+    val topic: String,
+    val content: String,
+    val type: QuestionType,
+    val options: List<String> = listOf(),
+    val correctAnswer: String = "",
+    val explanation: String = ""
+)
+
+/* ---------- QUIZ ENGINE ---------- */
+
+class QuizEngine {
+
+    private val questions = mutableListOf<Question>()
+    private val userAnswers = mutableMapOf<String, String>()
+    private val scores = mutableMapOf<String, Int>()
+
+    fun addQuestion(q: Question) {
+        questions.add(q)
+    }
+
+    fun removeQuestion(id: String) {
+        questions.removeAll { it.id == id }
+    }
+
+    fun getQuestionsByTopic(topic: String): List<Question> {
+        return questions.filter { it.topic == topic }
+    }
+
+    fun submitAnswer(userId: String, questionId: String, answer: String) {
+        userAnswers["$userId-$questionId"] = answer
+        val question = questions.find { it.id == questionId } ?: return
+        val currentScore = if (answer == question.correctAnswer) 1 else 0
+        scores[userId] = (scores[userId] ?: 0) + currentScore
+    }
+
+    fun getUserScore(userId: String): Int = scores[userId] ?: 0
+
+    fun reviewAnswers(userId: String): List<Pair<Question, String>> {
+        return questions.map { q ->
+            val answer = userAnswers["$userId-${q.id}"] ?: ""
+            q to answer
+        }
+    }
+}
+
+/* ---------- INTEGRATED OFFLINE QUIZ MODULE ---------- */
+
+class RevisionQuizModule {
+
+    private val quizEngine = QuizEngine()
+
+    fun addMCQ(id: String, topic: String, content: String, options: List<String>, correct: String, explanation: String = "") {
+        quizEngine.addQuestion(Question(id, topic, content, QuestionType.MCQ, options, correct, explanation))
+    }
+
+    fun addSAQ(id: String, topic: String, content: String, correct: String, explanation: String = "") {
+        quizEngine.addQuestion(Question(id, topic, content, QuestionType.SAQ, listOf(), correct, explanation))
+    }
+
+    fun addLQA(id: String, topic: String, content: String, correct: String, explanation: String = "") {
+        quizEngine.addQuestion(Question(id, topic, content, QuestionType.LQA, listOf(), correct, explanation))
+    }
+
+    fun getTopicQuestions(topic: String): List<Question> = quizEngine.getQuestionsByTopic(topic)
+
+    fun submitAnswer(userId: String, questionId: String, answer: String) {
+        quizEngine.submitAnswer(userId, questionId, answer)
+    }
+
+    fun getUserScore(userId: String): Int = quizEngine.getUserScore(userId)
+
+    fun reviewAnswers(userId: String): List<Pair<Question, String>> = quizEngine.reviewAnswers(userId)
+}package com.monster.revision.core
+
+/* ================================
+   PHASE 6 — LIBRARY ORGANIZATION & SMART SEARCH
+   ================================ */
+
+data class DocumentTag(
+    val name: String,
+    val parentTopic: String? = null
+)
+
+class ClassifiedDocument(
+    val doc: Document,
+    val tags: MutableList<DocumentTag> = mutableListOf()
+)
+
+class SmartLibrary {
+
+    private val library = mutableMapOf<String, ClassifiedDocument>()
+
+    fun addDocument(doc: Document, tags: List<DocumentTag> = listOf()) {
+        library[doc.id] = ClassifiedDocument(doc, tags.toMutableList())
+    }
+
+    fun removeDocument(docId: String) {
+        library.remove(docId)
+    }
+
+    fun addTag(docId: String, tag: DocumentTag) {
+        library[docId]?.tags?.add(tag)
+    }
+
+    fun removeTag(docId: String, tagName: String) {
+        library[docId]?.tags?.removeIf { it.name == tagName }
+    }
+
+    fun search(query: String): List<Document> {
+        val lowerQuery = query.lowercase()
+        return library.values.filter { classified ->
+            classified.doc.title.lowercase().contains(lowerQuery) ||
+            classified.doc.content.lowercase().contains(lowerQuery) ||
+            classified.tags.any { it.name.lowercase().contains(lowerQuery) }
+        }.map { it.doc }
+    }
+
+    fun getDocumentsByTag(tagName: String): List<Document> {
+        return library.values.filter { classified ->
+            classified.tags.any { it.name == tagName }
+        }.map { it.doc }
+    }
+
+    fun getAllTags(): List<String> {
+        return library.values.flatMap { it.tags.map { tag -> tag.name } }.distinct()
+    }
+
+    fun getAllDocuments(): List<Document> = library.values.map { it.doc }
+}
+
+/* ---------- INTEGRATED PHASE 6 LIBRARY MODULE ---------- */
+
+class RevisionLibrary {
+
+    private val smartLibrary = SmartLibrary()
+
+    fun addDocument(doc: Document, tags: List<String> = listOf()) {
+        val tagObjects = tags.map { DocumentTag(it) }
+        smartLibrary.addDocument(doc, tagObjects)
+    }
+
+    fun removeDocument(docId: String) = smartLibrary.removeDocument(docId)
+
+    fun tagDocument(docId: String, tagName: String) = smartLibrary.addTag(docId, DocumentTag(tagName))
+
+    fun untagDocument(docId: String, tagName: String) = smartLibrary.removeTag(docId, tagName)
+
+    fun searchDocuments(query: String): List<Document> = smartLibrary.search(query)
+
+    fun getDocumentsByTag(tagName: String): List<Document> = smartLibrary.getDocumentsByTag(tagName)
+
+    fun getAllTags(): List<String> = smartLibrary.getAllTags()
+
+    fun getAllDocuments(): List<Document> = smartLibrary.getAllDocuments()
+}
+package com.monster.revision.core
+
+/* ================================
+   PHASE 7 — AUTOMATED HIGHLIGHTS, CLOZE EXERCISES & NOTE-TAKING
+   ================================ */
+
+class ClozeExerciseGenerator {
+
+    fun generateCloze(doc: Document, wordCount: Int = 1): String {
+        val words = doc.content.split("\\s+".toRegex()).toMutableList()
+        if (words.isEmpty()) return ""
+        val indices = (0 until words.size).shuffled().take(wordCount)
+        indices.forEach { words[it] = "____" }
+        return words.joinToString(" ")
+    }
+}
+
+data class Note(
+    val docId: String,
+    val content: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+class NoteManager {
+
+    private val notes = mutableMapOf<String, MutableList<Note>>()
+
+    fun addNote(docId: String, content: String) {
+        val note = Note(docId, content)
+        if (!notes.containsKey(docId)) notes[docId] = mutableListOf()
+        notes[docId]?.add(note)
+    }
+
+    fun getNotes(docId: String): List<Note> = notes[docId]?.toList() ?: listOf()
+
+    fun deleteNote(docId: String, timestamp: Long) {
+        notes[docId]?.removeIf { it.timestamp == timestamp }
+    }
+
+    fun clearAllNotes(docId: String) {
+        notes.remove(docId)
+    }
+}
+
+/* ---------- AUTOMATED HIGHLIGHT GENERATOR ---------- */
+
+class AutoHighlighter(private val library: RevisionLibrary) {
+
+    private val colors = listOf("#FFEB3B", "#FFCDD2", "#C8E6C9", "#BBDEFB") // yellow, red, green, blue
+
+    fun highlightKeywords(keywords: List<String>) {
+        library.getAllDocuments().forEach { doc ->
+            keywords.forEach { word ->
+                val startIndex = doc.content.indexOf(word, ignoreCase = true)
+                if (startIndex != -1) {
+                    val endIndex = startIndex + word.length
+                    val color = colors.random()
+                    library.tagDocument(doc.id, word)
+                    // actual highlight simulation, can be applied in UI
+                }
+            }
+        }
+    }
+
+    fun generateClozeForTopic(topic: String, wordCount: Int = 1): Map<String, String> {
+        val docs = library.getDocumentsByTag(topic)
+        val clozeMap = mutableMapOf<String, String>()
+        val clozeGen = ClozeExerciseGenerator()
+        docs.forEach { doc ->
+            clozeMap[doc.id] = clozeGen.generateCloze(doc, wordCount)
+        }
+        return clozeMap
+    }
+}
+
+/* ---------- INTEGRATED PHASE 7 MODULE ---------- */
+
+class RevisionEnhancer(private val library: RevisionLibrary) {
+
+    val noteManager = NoteManager()
+    private val highlighter = AutoHighlighter(library)
+
+    fun addNote(docId: String, content: String) = noteManager.addNote(docId, content)
+    fun getNotes(docId: String) = noteManager.getNotes(docId)
+    fun deleteNote(docId: String, timestamp: Long) = noteManager.deleteNote(docId, timestamp)
+    fun clearNotes(docId: String) = noteManager.clearAllNotes(docId)
+
+    fun highlightKeywords(keywords: List<String>) = highlighter.highlightKeywords(keywords)
+    fun generateCloze(topic: String, wordCount: Int = 1) = highlighter.generateClozeForTopic(topic, wordCount)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.speech.tts.TextToSpeech
+import android.widget.Toast
+import java.util.*
+
+/* ================================
+   PHASE 8 — VOICE COMMANDS & INTERACTIVE TTS
+   ================================ */
+
+class VoiceController(private val context: Context, private val ttsEngine: OfflineTTS) {
+
+    private val commands = mapOf(
+        "pause" to { ttsEngine.speak("Paused") },
+        "resume" to { ttsEngine.speak("Resuming") },
+        "switch language" to { ttsEngine.switchLanguage() },
+        "read document" to { docId: String -> readDocumentById(docId) }
+    )
+
+    private val library = RevisionLibrary() // Reference to library
+
+    fun executeCommand(input: String, param: String = "") {
+        when {
+            input.contains("pause", ignoreCase = true) -> ttsEngine.speak("Speech paused")
+            input.contains("resume", ignoreCase = true) -> ttsEngine.speak("Resuming reading")
+            input.contains("switch language", ignoreCase = true) -> {
+                ttsEngine.switchLanguage()
+                Toast.makeText(context, "Language switched", Toast.LENGTH_SHORT).show()
+            }
+            input.contains("read document", ignoreCase = true) && param.isNotEmpty() -> readDocumentById(param)
+        }
+    }
+
+    private fun readDocumentById(docId: String) {
+        val doc = library.searchDocuments(docId).firstOrNull() ?: return
+        ttsEngine.speak(doc.content)
+    }
+}
+
+/* ---------- INTEGRATED PHASE 8 MODULE ---------- */
+
+class RevisionVoiceModule(context: Context) {
+
+    private val ttsEngine = OfflineTTS(context)
+    private val voiceController = VoiceController(context, ttsEngine)
+    private val library = RevisionLibrary()
+
+    fun addDocument(doc: Document, tags: List<String> = listOf()) = library.addDocument(doc, tags)
+    fun readDocument(docId: String) = voiceController.executeCommand("read document", docId)
+    fun pause() = voiceController.executeCommand("pause")
+    fun resume() = voiceController.executeCommand("resume")
+    fun switchLanguage() = voiceController.executeCommand("switch language")
+
+    fun executeVoiceCommand(command: String, param: String = "") = voiceController.executeCommand(command, param)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
+import org.json.JSONObject
+
+/* ================================
+   PHASE 9 — ONLINE WIKIPEDIA & EXTERNAL CONTENT SEARCH
+   ================================ */
+
+class OnlineSearchModule(private val context: Context, private val ttsEngine: OfflineTTS) {
+
+    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+
+    fun searchWikipedia(query: String, onResult: (title: String, extract: String) -> Unit) {
+        coroutineScope.launch {
+            try {
+                val url = URL("https://en.wikipedia.org/api/rest_v1/page/summary/${query.replace(" ", "_")}")
+                val connection = url.openConnection() as HttpsURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+
+                if (connection.responseCode == 200) {
+                    val result = connection.inputStream.bufferedReader().use { it.readText() }
+                    val json = JSONObject(result)
+                    val title = json.getString("title")
+                    val extract = json.optString("extract", "No summary available")
+                    withContext(Dispatchers.Main) {
+                        onResult(title, extract)
+                        ttsEngine.speak(extract)
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Wikipedia search failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    fun searchExternalResource(urlStr: String, onResult: (content: String) -> Unit) {
+        coroutineScope.launch {
+            try {
+                val url = URL(urlStr)
+                val connection = url.openConnection() as HttpsURLConnection
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+
+                if (connection.responseCode == 200) {
+                    val content = connection.inputStream.bufferedReader().use { it.readText() }
+                    withContext(Dispatchers.Main) { onResult(content) }
+                } else {
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Failed to fetch resource", Toast.LENGTH_SHORT).show() }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+}
+
+/* ---------- INTEGRATED PHASE 9 MODULE ---------- */
+
+class RevisionOnlineModule(context: Context) {
+
+    private val ttsEngine = OfflineTTS(context)
+    private val searchModule = OnlineSearchModule(context, ttsEngine)
+
+    fun searchWikipedia(query: String, onResult: (title: String, extract: String) -> Unit) =
+        searchModule.searchWikipedia(query, onResult)
+
+    fun searchExternal(url: String, onResult: (content: String) -> Unit) =
+        searchModule.searchExternalResource(url, onResult)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
+import org.json.JSONObject
+
+/* ================================
+   PHASE 10 — PAST PAPERS & AUTOMATED STUDY PLANNING
+   ================================ */
+
+data class StudyPlan(
+    val topic: String,
+    val subtopics: List<String>,
+    val suggestedDocs: List<Document>,
+    val suggestedQuestions: List<Question>
+)
+
+class PastPaperModule(private val context: Context) {
+
+    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+    private val library = RevisionLibrary()
+    private val quizModule = RevisionQuizModule()
+
+    fun fetchPastPaperQuestions(topic: String, url: String, onComplete: (List<Question>) -> Unit) {
+        coroutineScope.launch {
+            try {
+                val connection = URL(url).openConnection() as HttpsURLConnection
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                if (connection.responseCode == 200) {
+                    val content = connection.inputStream.bufferedReader().use { it.readText() }
+                    val questions = parseQuestionsFromContent(topic, content)
+                    questions.forEach { quizModule.addSAQ(it.id, it.topic, it.content, it.correctAnswer, it.explanation) }
+                    withContext(Dispatchers.Main) { onComplete(questions) }
+                } else {
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Failed to fetch past paper", Toast.LENGTH_SHORT).show() }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+
+    private fun parseQuestionsFromContent(topic: String, content: String): List<Question> {
+        // Simple parsing simulation: split by lines, assume each line is a question
+        return content.lines().filter { it.isNotBlank() }.mapIndexed { index, line ->
+            Question(
+                id = "PP-$topic-$index",
+                topic = topic,
+                content = line.trim(),
+                type = QuestionType.SAQ,
+                correctAnswer = "", // User or AI can fill later
+                explanation = ""
+            )
+        }
+    }
+}
+
+/* ---------- STUDY PLAN GENERATOR ---------- */
+
+class StudyPlanner(private val library: RevisionLibrary, private val quizModule: RevisionQuizModule) {
+
+    fun generatePlanForTopic(topic: String): StudyPlan {
+        val docs = library.getDocumentsByTag(topic)
+        val questions = quizModule.getTopicQuestions(topic)
+        val subtopics = docs.flatMap { doc -> doc.content.split(".") }.take(10) // simple subtopic extraction
+        return StudyPlan(topic, subtopics, docs, questions)
+    }
+}
+
+/* ---------- INTEGRATED PHASE 10 MODULE ---------- */
+
+class RevisionStudyAutomation(context: Context) {
+
+    private val pastPaperModule = PastPaperModule(context)
+    private val library = RevisionLibrary()
+    private val quizModule = RevisionQuizModule()
+    private val planner = StudyPlanner(library, quizModule)
+
+    fun addDocument(doc: Document, tags: List<String> = listOf()) = library.addDocument(doc, tags)
+
+    fun fetchPastPaperQuestions(topic: String, url: String, onComplete: (List<Question>) -> Unit) =
+        pastPaperModule.fetchPastPaperQuestions(topic, url, onComplete)
+
+    fun generateStudyPlan(topic: String): StudyPlan = planner.generatePlanForTopic(topic)
+}
+package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
+import org.json.JSONObject
+
+/* ================================
+   PHASE 11 — CONTENT VALIDATION & MISLEADING INFO DETECTION
+   ================================ */
+
+class ContentValidator(private val context: Context) {
+
+    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+
+    // Simulated external validation API (returns credibility score 0.0 - 1.0)
+    private fun getCredibilityScore(content: String): Double {
+        // Very simple heuristic: content with "fake" or "incorrect" gets low score
+        val lowered = content.lowercase()
+        return when {
+            lowered.contains("fake") || lowered.contains("incorrect") -> 0.2
+            lowered.length < 20 -> 0.5
+            else -> 0.9
+        }
+    }
+
+    fun validateDocument(doc: Document, onResult: (score: Double, isSafe: Boolean) -> Unit) {
+        coroutineScope.launch {
+            val score = getCredibilityScore(doc.content)
+            withContext(Dispatchers.Main) {
+                if (score < 0.7) {
+                    Toast.makeText(context, "Warning: '${doc.title}' may contain misleading info!", Toast.LENGTH_LONG).show()
+                }
+                onResult(score, score >= 0.7)
+            }
+        }
+    }
+
+    fun validateLibrary(library: RevisionLibrary, onComplete: (Map<String, Boolean>) -> Unit) {
+        coroutineScope.launch {
+            val results = mutableMapOf<String, Boolean>()
+            library.getAllDocuments().forEach { doc ->
+                val score = getCredibilityScore(doc.content)
+                results[doc.id] = score >= 0.7
+            }
+            withContext(Dispatchers.Main) { onComplete(results) }
+        }
+    }
+}
+
+/* ---------- INTEGRATED PHASE 11 MODULE ---------- */
+
+class RevisionContentCheck(private val context: Context) {
+
+    private val validator = ContentValidator(context)
+    private val library = RevisionLibrary()
+
+    fun addDocument(doc: Document, tags: List<String> = listOf()) = library.addDocument(doc, tags)
+
+    fun validateDocument(docId: String, onResult: (score: Double, isSafe: Boolean) -> Unit) {
+        val doc = library.getAllDocuments().firstOrNull { it.id == docId } ?: return
+        validator.validateDocument(doc, onResult)
+    }
+
+    fun validateLibrary(onComplete: (Map<String, Boolean>) -> Unit) = validator.validateLibrary(library, onComplete)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.graphics.Color
+import android.widget.Toast
+import kotlinx.coroutines.*
+
+/* ================================
+   PHASE 12 — MIND MAPS & VISUAL SUMMARIES
+   ================================ */
+
+data class MindMapNode(
+    val title: String,
+    val content: String,
+    val children: MutableList<MindMapNode> = mutableListOf()
+)
+
+class MindMapGenerator(private val library: RevisionLibrary) {
+
+    // Generate a mind map for a given topic
+    fun generateMindMap(topic: String): MindMapNode? {
+        val docs = library.getDocumentsByTag(topic)
+        if (docs.isEmpty()) return null
+
+        val root = MindMapNode(title = topic, content = "")
+        docs.forEach { doc ->
+            val subtopics = doc.content.split(".").filter { it.isNotBlank() }
+            subtopics.forEach { sub ->
+                root.children.add(MindMapNode(title = sub.take(30), content = sub))
+            }
+        }
+        return root
+    }
+
+    fun printMindMap(node: MindMapNode, indent: String = "") {
+        println("$indent- ${node.title}")
+        node.children.forEach { printMindMap(it, indent + "    ") }
+    }
+}
+
+/* ---------- INTEGRATED PHASE 12 MODULE ---------- */
+
+class RevisionMindMapModule(private val context: Context) {
+
+    private val library = RevisionLibrary()
+    private val mindMapGen = MindMapGenerator(library)
+
+    fun addDocument(doc: Document, tags: List<String> = listOf()) = library.addDocument(doc, tags)
+
+    fun generateMindMapForTopic(topic: String): MindMapNode? {
+        val mindMap = mindMapGen.generateMindMap(topic)
+        if (mindMap == null) {
+            Toast.makeText(context, "No documents found for topic '$topic'", Toast.LENGTH_SHORT).show()
+        }
+        return mindMap
+    }
+
+    fun displayMindMap(topic: String) {
+        val mindMap = generateMindMapForTopic(topic) ?: return
+        mindMapGen.printMindMap(mindMap)
+        // Later: integrate with UI for visual nodes and interactive selection
+    }
+}
+package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlin.random.Random
+
+/* ================================
+   PHASE 13 — QUIZZES & INTERACTIVE REVISION
+   ================================ */
+
+enum class QuestionType { MCQ, SAQ }
+
+data class Question(
+    val id: String,
+    val topic: String,
+    val content: String,
+    val type: QuestionType,
+    val options: List<String> = listOf(),
+    val correctAnswer: String = "",
+    val explanation: String = ""
+)
+
+class RevisionQuizModule {
+
+    private val questions = mutableListOf<Question>()
+
+    fun addMCQ(id: String, topic: String, question: String, options: List<String>, correctAnswer: String, explanation: String) {
+        questions.add(Question(id, topic, question, QuestionType.MCQ, options, correctAnswer, explanation))
+    }
+
+    fun addSAQ(id: String, topic: String, question: String, correctAnswer: String, explanation: String) {
+        questions.add(Question(id, topic, question, QuestionType.SAQ, correctAnswer = correctAnswer, explanation = explanation))
+    }
+
+    fun getTopicQuestions(topic: String): List<Question> = questions.filter { it.topic == topic }
+
+    fun generateRandomQuiz(topic: String, count: Int = 5): List<Question> {
+        val topicQuestions = getTopicQuestions(topic)
+        return topicQuestions.shuffled().take(count)
+    }
+
+    fun answerQuestion(questionId: String, answer: String): Boolean {
+        val q = questions.firstOrNull { it.id == questionId } ?: return false
+        return q.correctAnswer.equals(answer.trim(), ignoreCase = true)
+    }
+}
+
+/* ---------- INTEGRATED PHASE 13 MODULE ---------- */
+
+class RevisionInteractiveQuiz(private val context: Context) {
+
+    private val quizModule = RevisionQuizModule()
+
+    fun addDocumentQuestions(doc: Document, topic: String) {
+        // Auto-generate SAQs from document sentences
+        doc.content.split(".").filter { it.isNotBlank() }.forEachIndexed { idx, sentence ->
+            val qId = "${topic}_SAQ_$idx"
+            quizModule.addSAQ(qId, topic, sentence.trim(), "Check answer in notes", "Derived from document")
+        }
+    }
+
+    fun addManualMCQ(topic: String, question: String, options: List<String>, correctAnswer: String, explanation: String = "") {
+        val qId = "${topic}_MCQ_${Random.nextInt(1000)}"
+        quizModule.addMCQ(qId, topic, question, options, correctAnswer, explanation)
+    }
+
+    fun takeQuiz(topic: String, count: Int = 5) {
+        val quiz = quizModule.generateRandomQuiz(topic, count)
+        quiz.forEach { q ->
+            when (q.type) {
+                QuestionType.MCQ -> {
+                    println("MCQ: ${q.content}")
+                    q.options.forEachIndexed { idx, opt -> println("${'A' + idx}) $opt") }
+                }
+                QuestionType.SAQ -> println("SAQ: ${q.content}")
+            }
+        }
+    }
+}package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlin.random.Random
+
+/* ================================
+   PHASE 14 — OFFLINE VIDEO RECOMMENDATIONS & DYNAMIC CONTENT
+   ================================ */
+
+data class VideoContent(
+    val id: String,
+    val topic: String,
+    val title: String,
+    val filePath: String // local path for offline video
+)
+
+class VideoRecommendationModule(private val context: Context) {
+
+    private val videos = mutableListOf<VideoContent>()
+    private val lastShownIndex = mutableMapOf<String, Int>()
+
+    fun addVideo(video: VideoContent) {
+        videos.add(video)
+    }
+
+    fun getVideoForTopic(topic: String): VideoContent? {
+        val topicVideos = videos.filter { it.topic == topic }
+        if (topicVideos.isEmpty()) return null
+
+        val lastIndex = lastShownIndex[topic] ?: -1
+        val nextIndex = (lastIndex + 1) % topicVideos.size
+        lastShownIndex[topic] = nextIndex
+
+        return topicVideos[nextIndex]
+    }
+
+    fun requestAlternateVideo(topic: String): VideoContent? {
+        val topicVideos = videos.filter { it.topic == topic }
+        if (topicVideos.isEmpty()) return null
+
+        // Pick random video not equal to last shown
+        val lastIndex = lastShownIndex[topic] ?: -1
+        val available = topicVideos.indices.filter { it != lastIndex }
+        if (available.isEmpty()) return getVideoForTopic(topic) // fallback
+        val chosenIndex = available.random()
+        lastShownIndex[topic] = chosenIndex
+        return topicVideos[chosenIndex]
+    }
+
+    fun playVideo(video: VideoContent) {
+        Toast.makeText(context, "Playing video: ${video.title}", Toast.LENGTH_SHORT).show()
+        // Integration with Android VideoView or ExoPlayer can be done here
+    }
+}
+
+/* ---------- INTEGRATED PHASE 14 MODULE ---------- */
+
+class RevisionVideoModule(private val context: Context) {
+
+    private val videoModule = VideoRecommendationModule(context)
+
+    fun addVideo(video: VideoContent) = videoModule.addVideo(video)
+
+    fun showVideoForTopic(topic: String) {
+        val video = videoModule.getVideoForTopic(topic)
+        if (video == null) {
+            Toast.makeText(context, "No videos found for topic: $topic", Toast.LENGTH_SHORT).show()
+            return
+        }
+        videoModule.playVideo(video)
+    }
+
+    fun requestAlternateVideo(topic: String) {
+        val video = videoModule.requestAlternateVideo(topic)
+        if (video == null) {
+            Toast.makeText(context, "No alternative videos found for topic: $topic", Toast.LENGTH_SHORT).show()
+            return
+        }
+        videoModule.playVideo(video)
+    }
+}
+package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.util.*
+
+/* ================================
+   PHASE 15 — ONLINE STUDY GROUPS & AI PARTICIPATION
+   ================================ */
+
+data class Participant(
+    val id: String,
+    val name: String,
+    val profilePicUrl: String? = null,
+    val isOnline: Boolean = true
+)
+
+data class StudyEvent(
+    val id: String,
+    val title: String,
+    val participants: MutableList<Participant> = mutableListOf(),
+    val documents: MutableList<Document> = mutableListOf(),
+    val videos: MutableList<VideoContent> = mutableListOf(),
+    val isAIDriven: Boolean = false
+)
+
+class OnlineStudyGroupModule(private val context: Context) {
+
+    private val events = mutableListOf<StudyEvent>()
+    private val coroutineScope = CoroutineScope(Dispatchers.Main)
+
+    fun createEvent(title: String, isAIDriven: Boolean = false): StudyEvent {
+        val event = StudyEvent(UUID.randomUUID().toString(), title, isAIDriven = isAIDriven)
+        events.add(event)
+        Toast.makeText(context, "Event '$title' created", Toast.LENGTH_SHORT).show()
+        return event
+    }
+
+    fun joinEvent(eventId: String, participant: Participant) {
+        val event = events.firstOrNull { it.id == eventId } ?: return
+        event.participants.add(participant)
+        Toast.makeText(context, "${participant.name} joined '${event.title}'", Toast.LENGTH_SHORT).show()
+    }
+
+    fun addDocumentToEvent(eventId: String, doc: Document) {
+        val event = events.firstOrNull { it.id == eventId } ?: return
+        event.documents.add(doc)
+    }
+
+    fun addVideoToEvent(eventId: String, video: VideoContent) {
+        val event = events.firstOrNull { it.id == eventId } ?: return
+        event.videos.add(video)
+    }
+
+    fun startEvent(eventId: String) {
+        val event = events.firstOrNull { it.id == eventId } ?: return
+        Toast.makeText(context, "Starting event '${event.title}'", Toast.LENGTH_SHORT).show()
+
+        if (event.isAIDriven) {
+            coroutineScope.launch {
+                Toast.makeText(context, "Monster AI is leading the session", Toast.LENGTH_SHORT).show()
+                // AI can guide participants, ask questions, share documents/videos
+                delay(1000)
+            }
+        }
+    }
+}
+
+/* ---------- INTEGRATED PHASE 15 MODULE ---------- */
+
+class RevisionOnlineGroups(private val context: Context) {
+
+    private val groupModule = OnlineStudyGroupModule(context)
+
+    fun createGroup(title: String, isAIDriven: Boolean = false) = groupModule.createEvent(title, isAIDriven)
+
+    fun joinGroup(eventId: String, participant: Participant) = groupModule.joinEvent(eventId, participant)
+
+    fun addDocument(eventId: String, doc: Document) = groupModule.addDocumentToEvent(eventId, doc)
+
+    fun addVideo(eventId: String, video: VideoContent) = groupModule.addVideoToEvent(eventId, video)
+
+    fun startGroup(eventId: String) = groupModule.startEvent(eventId)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.util.*
+
+/* ================================
+   PHASE 16 — AI TUTOR DYNAMIC INTERACTION
+   ================================ */
+
+class AITutor(private val context: Context) {
+
+    private val coroutineScope = CoroutineScope(Dispatchers.Main)
+
+    // Simulate AI selecting a random participant to answer a question
+    fun pickParticipantRandomly(participants: List<Participant>): Participant? {
+        val onlineParticipants = participants.filter { it.isOnline }
+        if (onlineParticipants.isEmpty()) return null
+        return onlineParticipants.random()
+    }
+
+    fun askQuestion(event: StudyEvent, question: String) {
+        val participant = pickParticipantRandomly(event.participants)
+        if (participant == null) {
+            Toast.makeText(context, "No participants available to answer.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Toast.makeText(context, "Monster AI asks ${participant.name}: $question", Toast.LENGTH_LONG).show()
+
+        // If participant can't answer, AI fetches answer from external or offline resources
+        coroutineScope.launch {
+            val answer = fetchAnswerFromResources(question)
+            Toast.makeText(context, "Monster AI provides answer: $answer", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private suspend fun fetchAnswerFromResources(query: String): String {
+        // Simulate external search delay
+        delay(1000)
+        // In a real app, integrate with offline document search + optional online APIs
+        return "Sample answer for '$query' from Monster's resources."
+    }
+}
+
+/* ---------- INTEGRATED PHASE 16 MODULE ---------- */
+
+class RevisionAITutor(private val context: Context) {
+
+    private val aiTutor = AITutor(context)
+
+    fun runSession(event: StudyEvent) {
+        Toast.makeText(context, "Starting AI-tutored session for '${event.title}'", Toast.LENGTH_SHORT).show()
+
+        // Example: AI asks a question every few seconds
+        val questions = listOf(
+            "Explain the key concept of this topic.",
+            "Give an example of the subtopic.",
+            "Identify possible pitfalls."
+        )
+
+        CoroutineScope(Dispatchers.Main).launch {
+            for (q in questions) {
+                aiTutor.askQuestion(event, q)
+                delay(3000)
+            }
+        }
+    }
+}
+package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.util.*
+
+/* ================================
+   PHASE 17 — AI SMARTBOARD & PARTICIPANT INTERACTIVITY
+   ================================ */
+
+data class SmartBoardContent(
+    var content: String,
+    var highlightedSections: MutableList<String> = mutableListOf()
+)
+
+class AISmartBoard(private val context: Context) {
+
+    private var boardContent = SmartBoardContent(content = "")
+
+    fun updateBoard(newContent: String) {
+        boardContent.content = newContent
+        Toast.makeText(context, "Smartboard updated", Toast.LENGTH_SHORT).show()
+    }
+
+    fun highlightSection(section: String) {
+        boardContent.highlightedSections.add(section)
+        Toast.makeText(context, "Section highlighted: $section", Toast.LENGTH_SHORT).show()
+    }
+
+    fun getBoardContent(): SmartBoardContent = boardContent
+}
+
+/* ---------- PARTICIPANT INTERACTIVITY ---------- */
+
+class ParticipantInteraction(private val context: Context, private val smartBoard: AISmartBoard) {
+
+    fun viewNotes() {
+        Toast.makeText(context, "Viewing personal notes", Toast.LENGTH_SHORT).show()
+        // Display notes in UI
+    }
+
+    fun overrideBoard(newContent: String) {
+        smartBoard.updateBoard(newContent)
+        Toast.makeText(context, "Smartboard overridden by participant", Toast.LENGTH_SHORT).show()
+    }
+
+    fun interactWithGroupMessage(message: String) {
+        Toast.makeText(context, "Participant says: $message", Toast.LENGTH_SHORT).show()
+        // Can integrate chat module
+    }
+}
+
+/* ---------- INTEGRATED PHASE 17 MODULE ---------- */
+
+class RevisionSmartBoardModule(private val context: Context) {
+
+    private val smartBoard = AISmartBoard(context)
+    private val participantInteraction = ParticipantInteraction(context, smartBoard)
+
+    fun updateBoardContent(content: String) = smartBoard.updateBoard(content)
+    fun highlightBoardSection(section: String) = smartBoard.highlightSection(section)
+    fun participantViewNotes() = participantInteraction.viewNotes()
+    fun participantOverrideBoard(content: String) = participantInteraction.overrideBoard(content)
+    fun participantSendMessage(message: String) = participantInteraction.interactWithGroupMessage(message)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.util.*
+
+/* ================================
+   PHASE 18 — TIMETABLE & COURSE-BASED AUTOMATED STUDY
+   ================================ */
+
+data class StudySession(
+    val topic: String,
+    val subtopic: String? = null,
+    val durationMinutes: Int,
+    val resources: MutableList<Any> = mutableListOf() // Documents, videos, quizzes
+)
+
+data class DailyTimetable(
+    val date: String,
+    val sessions: MutableList<StudySession> = mutableListOf()
+)
+
+class AutomatedStudyPlanner(private val context: Context) {
+
+    private val timetable = mutableListOf<DailyTimetable>()
+    private val coroutineScope = CoroutineScope(Dispatchers.Main)
+
+    fun createDailyTimetable(date: String, sessions: List<StudySession>) {
+        val daily = DailyTimetable(date, sessions.toMutableList())
+        timetable.add(daily)
+        Toast.makeText(context, "Timetable created for $date", Toast.LENGTH_SHORT).show()
+    }
+
+    fun startStudy(date: String) {
+        val daily = timetable.firstOrNull { it.date == date }
+        if (daily == null) {
+            Toast.makeText(context, "No timetable found for $date", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        coroutineScope.launch {
+            for (session in daily.sessions) {
+                Toast.makeText(context, "Starting session: ${session.topic}", Toast.LENGTH_SHORT).show()
+                session.resources.forEach { resource ->
+                    when (resource) {
+                        is Document -> Toast.makeText(context, "Reading document: ${resource.title}", Toast.LENGTH_SHORT).show()
+                        is VideoContent -> Toast.makeText(context, "Playing video: ${resource.title}", Toast.LENGTH_SHORT).show()
+                        is Question -> Toast.makeText(context, "Practicing question: ${resource.content}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                delay(session.durationMinutes * 60000L)
+                Toast.makeText(context, "Session complete. Take a short break.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+}
+
+/* ---------- INTEGRATED PHASE 18 MODULE ---------- */
+
+class RevisionPlannerModule(private val context: Context) {
+
+    private val planner = AutomatedStudyPlanner(context)
+
+    fun setupTimetable(date: String, sessions: List<StudySession>) = planner.createDailyTimetable(date, sessions)
+    fun runStudySession(date: String) = planner.startStudy(date)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.widget.Toast
+import kotlinx.coroutines.*
+import java.util.*
+
+/* ================================
+   PHASE 19 — ADVANCED STUDY ANALYTICS & SMART QUESTION CURATION
+   ================================ */
+
+data class PastPaperQuestion(
+    val id: String,
+    val topic: String,
+    val subtopic: String? = null,
+    val content: String,
+    val answer: String? = null
+)
+
+class StudyAnalytics(private val context: Context) {
+
+    private val questionsDatabase = mutableListOf<PastPaperQuestion>()
+    private val coroutineScope = CoroutineScope(Dispatchers.Main)
+
+    // Add questions from offline or online past papers
+    fun addQuestions(vararg questions: PastPaperQuestion) {
+        questionsDatabase.addAll(questions)
+    }
+
+    // Retrieve questions filtered by topic/subtopic
+    fun getQuestions(topic: String, subtopic: String? = null): List<PastPaperQuestion> {
+        return questionsDatabase.filter { it.topic == topic && (subtopic == null || it.subtopic == subtopic) }
+    }
+
+    // Smartly curate content: fetch high-yield questions and resources
+    fun curateStudyMaterial(topic: String, subtopic: String? = null): List<Any> {
+        val relevantQuestions = getQuestions(topic, subtopic)
+        val curatedContent = mutableListOf<Any>()
+        curatedContent.addAll(relevantQuestions)
+        Toast.makeText(context, "Curated ${relevantQuestions.size} high-yield items for $topic", Toast.LENGTH_SHORT).show()
+        return curatedContent
+    }
+
+    // Analyze study performance (stub for expansion)
+    fun analyzeProgress(userResponses: Map<String, Boolean>) {
+        val correct = userResponses.values.count { it }
+        val total = userResponses.size
+        Toast.makeText(context, "Progress: $correct/$total correct answers", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/* ---------- INTEGRATED PHASE 19 MODULE ---------- */
+
+class RevisionSmartAnalytics(private val context: Context) {
+
+    private val analytics = StudyAnalytics(context)
+
+    fun addPastPaperQuestions(vararg questions: PastPaperQuestion) = analytics.addQuestions(*questions)
+
+    fun getCuratedMaterial(topic: String, subtopic: String? = null) = analytics.curateStudyMaterial(topic, subtopic)
+
+    fun evaluateProgress(userResponses: Map<String, Boolean>) = analytics.analyzeProgress(userResponses)
+}package com.monster.revision.core
+
+import android.content.Context
+import android.content.Intent
+import android.speech.tts.TextToSpeech
+import android.widget.Toast
+import java.util.*
+
+/* ================================
+   PHASE 20 — ADVANCED MULTILINGUAL SUPPORT
+   ================================ */
+
+class MultilingualModule(private val context: Context) : TextToSpeech.OnInitListener {
+
+    private var tts: TextToSpeech = TextToSpeech(context, this)
+    private val languages = mutableListOf(Locale.ENGLISH)  // Default
+    private var currentLangIndex = 0
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts.language = languages[currentLangIndex]
+        } else {
+            Toast.makeText(context, "TTS initialization failed", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Speak text in current language
+    fun speak(text: String) {
+        tts.language = languages[currentLangIndex]
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+        Toast.makeText(context, "Speaking in ${languages[currentLangIndex].displayName}", Toast.LENGTH_SHORT).show()
+    }
+
+    // Download a new language dynamically
+    fun downloadLanguage(langCode: String) {
+        val locale = Locale.forLanguageTag(langCode)
+        val result = tts.setLanguage(locale)
+        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+            val installIntent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+            context.startActivity(installIntent)
+            Toast.makeText(context, "Downloading language: $langCode", Toast.LENGTH_SHORT).show()
+        } else {
+            if (!languages.contains(locale)) languages.add(locale)
+            Toast.makeText(context, "Language ready: ${locale.displayName}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Switch to next language in the list
+    fun switchLanguage() {
+        if (languages.isEmpty()) return
+        currentLangIndex = (currentLangIndex + 1) % languages.size
+        tts.language = languages[currentLangIndex]
+        Toast.makeText(context, "Switched to: ${languages[currentLangIndex].displayName}", Toast.LENGTH_SHORT).show()
+    }
+
+    // Report language issues
+    fun checkLanguageSupport(locale: Locale): Boolean {
+        val result = tts.setLanguage(locale)
+        return if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+            Toast.makeText(context, "Language not supported: ${locale.displayName}", Toast.LENGTH_SHORT).show()
+            false
+        } else true
+    }
+
+    fun shutdown() {
+        tts.stop()
+        tts.shutdown()
+    }
+}
+
+/* ---------- INTEGRATED PHASE 20 MODULE ---------- */
+
+class RevisionMultilingual(private val context: Context) {
+
+    private val multiLangModule = MultilingualModule(context)
+
+    fun speakText(text: String) = multiLangModule.speak(text)
+    fun addLanguage(langCode: String) = multiLangModule.downloadLanguage(langCode)
+    fun nextLanguage() = multiLangModule.switchLanguage()
+    fun validateLanguage(locale: Locale) = multiLangModule.checkLanguageSupport(locale)
+    fun stopTTS() = multiLangModule.shutdown()
+}
+package com.monster.revision.core
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.speech.tts.TextToSpeech
+import android.widget.ArrayAdapter
+import android.widget.Spinner
+import android.widget.Toast
+import java.util.*
+
+/* ================================
+   PHASE 21 — MULTILINGUAL DASHBOARD & TTS DOWNLOADS
+   ================================ */
+
+data class LanguageOption(
+    val name: String,
+    val locale: Locale,
+    val ttsDownloadUri: String? = null // Optional external link
+)
+
+class MultilingualDashboard(private val context: Context, private val spinner: Spinner) {
+
+    private val availableLanguages = mutableListOf(
+        LanguageOption("English (US)", Locale("en", "US")),
+        LanguageOption("English (UK)", Locale("en", "GB")),
+        LanguageOption("Kiswahili", Locale("sw", "KE"), "https://github.com/espeak-ng/espeak-ng/releases"),
+        LanguageOption("French", Locale("fr", "FR")),
+        LanguageOption("Spanish", Locale("es", "ES")),
+        LanguageOption("German", Locale("de", "DE"))
+    )
+
+    private var tts: TextToSpeech = TextToSpeech(context) { status ->
+        if (status != TextToSpeech.SUCCESS)
+            Toast.makeText(context, "TTS Initialization failed", Toast.LENGTH_SHORT).show()
+    }
+
+    // Populate Spinner for UI selection
+    fun populateLanguageSpinner() {
+        val names = availableLanguages.map { it.name }
+        val adapter = ArrayAdapter(context, android.R.layout.simple_spinner_item, names)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
+    }
+
+    // Download TTS engine for selected language
+    fun downloadSelectedLanguage() {
+        val selectedPosition = spinner.selectedItemPosition
+        val langOption = availableLanguages[selectedPosition]
+
+        // Attempt system TTS download
+        val result = tts.setLanguage(langOption.locale)
+        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+            // If there is an external link, open it
+            langOption.ttsDownloadUri?.let {
+                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(it))
+                context.startActivity(browserIntent)
+                Toast.makeText(context, "Redirecting to download ${langOption.name}", Toast.LENGTH_SHORT).show()
+            } ?: run {
+                // Use system installer as fallback
+                val installIntent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+                context.startActivity(installIntent)
+                Toast.makeText(context, "Installing TTS data for ${langOption.name}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "Language ${langOption.name} already available", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Speak text in the selected language
+    fun speakText(text: String) {
+        val selectedPosition = spinner.selectedItemPosition
+        val langOption = availableLanguages[selectedPosition]
+        tts.language = langOption.locale
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+        Toast.makeText(context, "Speaking in ${langOption.name}", Toast.LENGTH_SHORT).show()
+    }
+
+    // Check if language is supported
+    fun checkLanguageSupport(): Boolean {
+        val selectedPosition = spinner.selectedItemPosition
+        val langOption = availableLanguages[selectedPosition]
+        val result = tts.setLanguage(langOption.locale)
+        val supported = result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
+        if (!supported) Toast.makeText(context, "${langOption.name} not supported", Toast.LENGTH_SHORT).show()
+        return supported
+    }
+
+    fun shutdown() {
+        tts.stop()
+        tts.shutdown()
+    }
+}<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Monster v2.4 Dashboard</title>
+<style>
+body { font-family: sans-serif; padding: 10px; }
+button { margin: 4px; padding: 6px 12px; }
+textarea { width: 100%; height: 80px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<h2>Monster v2.4 Dashboard</h2>
+
+<!-- Wikipedia & AI -->
+<input id="query" placeholder="Search Wikipedia">
+<button onclick="searchWiki()">Wikipedia</button>
+<div id="wikiResult"></div>
+
+<textarea id="aiPrompt" placeholder="Ask Monster AI"></textarea>
+<button onclick="askAI()">Ask AI</button>
+<div id="aiAnswer"></div>
+
+<button onclick="read()">Read Aloud</button>
+<button onclick="highlightWord()">Highlight Word</button>
+<button onclick="highlightLine()">Highlight Line</button>
+<button onclick="highlightSelectionOnly()">Highlight Selection</button>
+<button onclick="recap()">Recap</button>
+<button onclick="cloze()">Cloze</button>
+<button onclick="mcq()">MCQ</button>
+<button onclick="listen()">Voice Cmd</button>
+<button onclick="saveProgress()">Save Progress</button>
+
+<!-- Language selection -->
+<select id="langSelect">
+  <option value="en-US">English (US)</option>
+  <option value="en-GB">English (UK)</option>
+  <option value="sw-KE">Kiswahili</option>
+  <option value="fr-FR">French</option>
+  <option value="es-ES">Spanish</option>
+  <option value="de-DE">German</option>
+</select>
+<button onclick="downloadLang()">Download Voice</button>
+
+<!-- ===== PHASE 22 Notes Integration ===== -->
+<h3>Study Notes</h3>
+<input id="notesTopic" placeholder="Topic">
+<input id="notesSubtopic" placeholder="Subtopic (optional)">
+<button onclick="generateNotes()">Generate Notes</button>
+<button onclick="retrieveNotes()">View Notes</button>
+<div id="notesDisplay" style="margin-top:10px; white-space: pre-wrap;"></div>
+
+<script>
+let highlightColor="yellow";
+
+function highlightSelection(scope="selection"){ /* word,line,selection logic */ }
+function highlightWord(){highlightSelection("word");}
+function highlightLine(){highlightSelection("line");}
+function highlightSelectionOnly(){highlightSelection("selection");}
+
+function read(){ 
+    const t=window.getSelection().toString()||document.body.innerText; 
+    Monster.speak(t); 
+}
+
+function downloadLang(){ 
+    const lang=document.getElementById("langSelect").value; 
+    Monster.downloadVoice(lang); 
+    alert("Requested download for "+lang); 
+}
+
+function recap(){alert(document.body.innerText.split('.').slice(0,5).join('.'));}
+function cloze(){let w=document.body.innerText.split(' '); let i=Math.floor(Math.random()*w.length); w[i]='____'; alert(w.slice(0,50).join(' '));}
+function mcq(){alert("Q: Sample?\nA) 1\nB) 2\nC) 3\nD) 4");}
+
+function searchWiki(){ 
+    const q=document.getElementById('query').value; 
+    fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(q)}`)
+    .then(r=>r.json())
+    .then(d=>{
+        document.getElementById('wikiResult').innerHTML=`<h3>${d.title}</h3><p>${d.extract}</p>`; 
+        Monster.speak(d.extract);
+    }).catch(()=>alert('Not found')); 
+}
+
+function askAI(){ alert('AI offline');}
+function listen(){ alert('Voice command');}
+function saveProgress(){ 
+    localStorage.setItem('monster_notes',document.body.innerHTML); 
+    alert('Saved');
+}
+function loadProgress(){ 
+    const d=localStorage.getItem('monster_notes'); 
+    if(d) document.body.innerHTML=d;
+}
+window.onload=loadProgress;
+
+/* ===== PHASE 22: Notes JS ===== */
+function generateNotes(){
+    const topic=document.getElementById("notesTopic").value;
+    const subtopic=document.getElementById("notesSubtopic").value;
+    if(!topic){ alert("Enter a topic"); return; }
+    Monster.generateNotes(topic, subtopic || null);
+}
+
+function retrieveNotes(){
+    const topic=document.getElementById("notesTopic").value;
+    const subtopic=document.getElementById("notesSubtopic").value;
+    if(!topic){ alert("Enter a topic"); return; }
+    Monster.retrieveNotes(topic, subtopic || null);
+}
+</script>
+</body>
+</html>
+
+
