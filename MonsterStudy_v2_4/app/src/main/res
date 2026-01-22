@@ -1,0 +1,21 @@
+app/src/main/res/
+├── drawable/
+│   ├── ic_launcher.png          # App icon (use any PNG)
+│   ├── ic_logo.png              # Logo for splash or main screen
+│   ├── bg_main.png              # Background image (can be plain color PNG)
+│   └── btn_background.xml       # Button background shape
+├── layout/
+│   ├── activity_main.xml
+│   ├── activity_quiz.xml
+│   ├── fragment_notes.xml
+│   ├── fragment_course.xml
+│   └── item_quiz_question.xml
+├── mipmap/
+│   ├── ic_launcher.png
+│   └── ic_launcher_round.png
+├── values/
+│   ├── colors.xml
+│   ├── strings.xml
+│   ├── dimens.xml
+│   ├── styles.xml
+│   └── themes.xml
