@@ -1,8 +1,0 @@
-<resources>
-    <string name="app_name">MonsterStudy</string>
-    <string name="welcome_message">Welcome to Monster AI Study</string>
-    <string name="start">Start</string>
-    <string name="quiz">Quiz</string>
-    <string name="notes">Notes</string>
-    <string name="courses">Courses</string>
-</resources>
