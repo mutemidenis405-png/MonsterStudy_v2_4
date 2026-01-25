@@ -1,1 +1,0 @@
-# MonsterStudy_v2_4
